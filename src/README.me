@@ -1,0 +1,22 @@
+# Battlefield FDE Nexus Gateway (`battlefield-fde-nexus`)
+
+High-performance, edge-native telemetry gateway & AI service orchestration hub built on Cloudflare Workers and D1 SQL persistence.
+
+## 🌟 Key Features
+
+- **Cyberpunk Dashboard UI**: Real-time System Status terminal, dynamic latency line charts, and service navigation links.
+- **Edge Telemetry Collector**: Captures client metrics (`hardwareConcurrency`, screen resolution, dwell time, IP, geolocation).
+- **D1 Analytics Persistence**: Asynchronous session logging and non-blocking database heartbeats using SQLite `UPSERT` logic.
+- **Interactive Command Terminal**: Supports query commands (`help`, `logs`, `status`, `whoami`) directly from the browser interface.
+- **REST Telemetry APIs**:
+  - `POST /api/telemetry/heartbeat` - Live session heartbeats.
+  - `GET /api/telemetry/analytics` - Aggregated session and city distribution metrics.
+  - `GET /api/health-check` - Real-time edge service health diagnostics.
+
+## 🚀 Quick Start (Local Development)
+
+### 1. Clone & Install Dependencies
+```bash
+git clone [https://github.com/natheryinan/battlefield-fde-nexus.git](https://github.com/natheryinan/battlefield-fde-nexus.git)
+cd battlefield-fde-nexus
+npm install
