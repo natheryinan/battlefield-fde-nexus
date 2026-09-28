@@ -44,19 +44,20 @@ export default {
           });
         }
 
-        const apiKey = env.GEMINI_API_KEY;
+        // 优先读取 lordalmightywife 密匙，如未设置则降级至 GEMINI_API_KEY
+        const apiKey = env.lordalmightywife || env.GEMINI_API_KEY;
         if (!apiKey) {
           return new Response(
             JSON.stringify({
               success: true,
-              response: `[NEXUS-MOCK-AI]: API Key 未绑定。提示词 "${prompt}" 已接收，节点边缘响应正常。`
+              response: `[NEXUS-MOCK-AI]: API Key 未绑定。提示词 "${prompt}" 已接收，边缘节点响应正常。`
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
 
         // 调用 Gemini 1.5 Flash 边缘模型 API
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        const geminiUrl = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`;
         const aiReq = await fetch(geminiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -68,7 +69,7 @@ export default {
         const aiData = await aiReq.json();
         const responseText =
           aiData.candidates?.[0]?.content?.parts?.[0]?.text ||
-          "[NEXUS-AI]: 未能获取有效 AI 响应，请检查请求配额。";
+          "[NEXUS-AI]: 未能获取有效 AI 响应，请检查请求配额或 Key 有效性。";
 
         return new Response(
           JSON.stringify({
@@ -164,8 +165,7 @@ export default {
     // -------------------------------------------------------------
     // Dashboard + Full Interactive Terminal HTML UI
     // -------------------------------------------------------------
-    const htmlContent = `
-<!DOCTYPE html>
+    const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -229,23 +229,23 @@ export default {
     const sessionId = "SESS-" + Math.random().toString(36).substring(2, 9).toUpperCase();
     let dwell = 0;
 
-    async function sendTelemetry(cmd = null) {
+    async function sendTelemetry(cmd) {
       dwell += 5;
       await fetch('/api/telemetry/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId,
+          sessionId: sessionId,
           dwellSeconds: dwell,
           eventType: 'heartbeat',
           hardwareConcurrency: navigator.hardwareConcurrency || 0,
           screenResolution: window.screen.width + 'x' + window.screen.height,
-          lastCommand: cmd
+          lastCommand: cmd || null
         })
       });
     }
 
-    setInterval(() => sendTelemetry(), 5000);
+    setInterval(() => sendTelemetry(null), 5000);
 
     async function onCommand(e) {
       if (e.key === 'Enter') {
@@ -255,50 +255,50 @@ export default {
         if (!cmd) return;
 
         input.value = '';
-        out.innerHTML += \`<span style="color:#ffffff;">root@yinan-gate:~# \${cmd}</span><br/>\`;
-        sendTelemetry(cmd);
+        out.innerHTML += '<span style="color:#ffffff;">root@yinan-gate:~# ' + cmd + '</span><br/>';
+
+        await sendTelemetry(cmd);
 
         if (cmd === 'help') {
-          out.innerHTML += \`Available Commands:<br/>
-            &nbsp;&nbsp;<b>ai &lt;prompt&gt;</b> : Dispatch prompt to Edge AI Service<br/>
-            &nbsp;&nbsp;<b>logs</b> : Query latest 5 D1 telemetry records<br/>
-            &nbsp;&nbsp;<b>status</b> : Show gateway health status<br/>
-            &nbsp;&nbsp;<b>whoami</b> : Display client connection context<br/>
-            &nbsp;&nbsp;<b>clear</b> : Clear terminal screen<br/><br/>\`;
+          out.innerHTML += 'Available Commands:<br/>' +
+            '&nbsp;&nbsp;<b>ai &lt;prompt&gt;</b> : Dispatch prompt to Edge AI Service<br/>' +
+            '&nbsp;&nbsp;<b>logs</b> : Query latest 5 D1 telemetry records<br/>' +
+            '&nbsp;&nbsp;<b>status</b> : Show gateway health status<br/>' +
+            '&nbsp;&nbsp;<b>whoami</b> : Display client connection context<br/>' +
+            '&nbsp;&nbsp;<b>clear</b> : Clear terminal screen<br/><br/>';
         } else if (cmd.startsWith('ai ')) {
           const prompt = cmd.substring(3);
-          out.innerHTML += \`<span style="color:#e3b341;">[AI Orchestrator]: Dispatching to Gemini Edge API...</span><br/>\`;
+          out.innerHTML += '<span style="color:#e3b341;">[AI Orchestrator]: Dispatching to Gemini Edge API...</span><br/>';
           try {
             const res = await fetch('/api/v1/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt })
+              body: JSON.stringify({ prompt: prompt })
             });
             const data = await res.json();
-            out.innerHTML += \`<span style="color:#00ff66;">\${data.response}</span><br/><br/>\`;
+            out.innerHTML += '<span style="color:#00ff66;">' + data.response + '</span><br/><br/>';
           } catch(err) {
-            out.innerHTML += \`<span style="color:#ff0055;">[AI Error]: \${err.message}</span><br/><br/>\`;
+            out.innerHTML += '<span style="color:#ff0055;">[AI Error]: ' + err.message + '</span><br/><br/>';
           }
         } else if (cmd === 'logs') {
           const res = await fetch('/api/telemetry/recent-logs');
           const data = await res.json();
           out.innerHTML += '<pre style="color:#00ffcc;">' + JSON.stringify(data.logs, null, 2) + '</pre><br/>';
         } else if (cmd === 'whoami') {
-          out.innerHTML += \`Client IP: ${clientIP}<br/>Location: ${city},${country}<br/>Session: \${sessionId}<br/><br/>\`;
+          out.innerHTML += 'Client IP: ${clientIP}<br/>Location: ${city}, ${country}<br/>Session: ' + sessionId + '<br/><br/>';
         } else if (cmd === 'status') {
-          out.innerHTML += \`Node: Cloudflare Edge<br/>D1 Status: CONNECTED<br/>AI Engine: READY<br/><br/>\`;
+          out.innerHTML += 'Node: Cloudflare Edge<br/>D1 Status: CONNECTED<br/>AI Engine: READY<br/><br/>';
         } else if (cmd === 'clear') {
           out.innerHTML = '';
         } else {
-          out.innerHTML += \`Command not found: \${cmd}. Type 'help' for available options.<br/><br/>\`;
+          out.innerHTML += 'Command not found: ' + cmd + '. Type \'help\' for available options.<br/><br/>';
         }
         out.scrollTop = out.scrollHeight;
       }
     }
   </script>
 </body>
-</html>
-    `;
+</html>`;
 
     return new Response(htmlContent, {
       headers: { "Content-Type": "text/html; charset=utf-8" }
