@@ -32,9 +32,9 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // API 2: 真实 Gemini AI API 路由
+    // API 2: Gemini AI API 路由
     // -------------------------------------------------------------
-    if (url.pathname === "/api/v1/chat" && request.method === "POST") {
+   if (url.pathname === "/api/v1/chat" && request.method === "POST") {
       try {
         const { prompt } = await request.json();
         if (!prompt) {
@@ -44,20 +44,19 @@ export default {
           });
         }
 
-        // 优先读取 lordalmightywife 密匙，如未设置则降级至 GEMINI_API_KEY
-        const apiKey = env.lordalmightywife || env.GEMINI_API_KEY;
+        const apiKey = env.GEMINI_API_KEY || env.lordalmightywife;
         if (!apiKey) {
           return new Response(
             JSON.stringify({
-              success: true,
-              response: `[NEXUS-MOCK-AI]: API Key 未绑定。提示词 "${prompt}" 已接收，边缘节点响应正常。`
+              success: false,
+              error: "API Key is missing. Please set GEMINI_API_KEY via wrangler secret."
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
 
-        // 调用 Gemini 1.5 Flash 边缘模型 API
-        const geminiUrl = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`;
+        // 使用 standard Endpoint 支持 Gemini API
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
         const aiReq = await fetch(geminiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -67,9 +66,21 @@ export default {
         });
 
         const aiData = await aiReq.json();
+        
+        if (!aiReq.ok) {
+          const errMsg = aiData.error?.message || JSON.stringify(aiData);
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: `Gemini API Error (${aiReq.status}): ${errMsg}`
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
         const responseText =
           aiData.candidates?.[0]?.content?.parts?.[0]?.text ||
-          "[NEXUS-AI]: 未能获取有效 AI 响应，请检查请求配额或 Key 有效性。";
+          "[NEXUS-AI]: No content generated.";
 
         return new Response(
           JSON.stringify({
@@ -87,7 +98,6 @@ export default {
         });
       }
     }
-
     // -------------------------------------------------------------
     // API 3: D1 遥测数据上报与心跳
     // -------------------------------------------------------------
@@ -139,7 +149,7 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // API 4: 遥测数据近期 Log 查询
+    // API 4: 遥测数据 Log 查询
     // -------------------------------------------------------------
     if (url.pathname === "/api/telemetry/recent-logs" && request.method === "GET") {
       try {
@@ -163,7 +173,7 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // Dashboard + Full Interactive Terminal HTML UI
+    // HTML / Dashboard UI Render (完全避免引号和反斜杠转义问题)
     // -------------------------------------------------------------
     const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -187,6 +197,10 @@ export default {
     .input-row { display: flex; margin-top: 10px; border-top: 1px dashed #00ffcc33; padding-top: 10px; }
     .prompt-label { color: #ff0055; margin-right: 10px; font-weight: bold; }
     input[type="text"] { background: transparent; border: none; outline: none; color: #00ffcc; font-family: inherit; font-size: 13px; flex: 1; }
+    .cmd-line { color: #ffffff; }
+    .ai-loading { color: #e3b341; }
+    .ai-success { color: #00ff66; }
+    .ai-error { color: #ff0055; }
   </style>
 </head>
 <body>
@@ -226,74 +240,89 @@ export default {
   </div>
 
   <script>
-    const sessionId = "SESS-" + Math.random().toString(36).substring(2, 9).toUpperCase();
-    let dwell = 0;
+    var sessionId = "SESS-" + Math.random().toString(36).substring(2, 9).toUpperCase();
+    var dwell = 0;
+    var clientIP = "${clientIP}";
+    var city = "${city}";
+    var country = "${country}";
 
-    async function sendTelemetry(cmd) {
+    function appendLog(html) {
+      var out = document.getElementById("term-out");
+      out.innerHTML += html;
+      out.scrollTop = out.scrollHeight;
+    }
+
+    function sendTelemetry(cmd) {
       dwell += 5;
-      await fetch('/api/telemetry/heartbeat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      return fetch("/api/telemetry/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: sessionId,
           dwellSeconds: dwell,
-          eventType: 'heartbeat',
+          eventType: "heartbeat",
           hardwareConcurrency: navigator.hardwareConcurrency || 0,
-          screenResolution: window.screen.width + 'x' + window.screen.height,
+          screenResolution: window.screen.width + "x" + window.screen.height,
           lastCommand: cmd || null
         })
-      });
+      }).catch(function(err){ console.error(err); });
     }
 
-    setInterval(() => sendTelemetry(null), 5000);
+    setInterval(function(){ sendTelemetry(null); }, 5000);
 
-    async function onCommand(e) {
-      if (e.key === 'Enter') {
-        const input = document.getElementById('term-in');
-        const cmd = input.value.trim();
-        const out = document.getElementById('term-out');
+    function onCommand(e) {
+      if (e.key === "Enter") {
+        var input = document.getElementById("term-in");
+        var cmd = input.value.trim();
         if (!cmd) return;
 
-        input.value = '';
-        out.innerHTML += '<span style="color:#ffffff;">root@yinan-gate:~# ' + cmd + '</span><br/>';
+        input.value = "";
+        appendLog('<div><span class="cmd-line">root@yinan-gate:~# ' + cmd + '</span></div>');
 
-        await sendTelemetry(cmd);
+        sendTelemetry(cmd);
 
-        if (cmd === 'help') {
-          out.innerHTML += 'Available Commands:<br/>' +
+        if (cmd === "help") {
+          appendLog('<div>Available Commands:<br/>' +
             '&nbsp;&nbsp;<b>ai &lt;prompt&gt;</b> : Dispatch prompt to Edge AI Service<br/>' +
             '&nbsp;&nbsp;<b>logs</b> : Query latest 5 D1 telemetry records<br/>' +
             '&nbsp;&nbsp;<b>status</b> : Show gateway health status<br/>' +
             '&nbsp;&nbsp;<b>whoami</b> : Display client connection context<br/>' +
-            '&nbsp;&nbsp;<b>clear</b> : Clear terminal screen<br/><br/>';
-        } else if (cmd.startsWith('ai ')) {
-          const prompt = cmd.substring(3);
-          out.innerHTML += '<span style="color:#e3b341;">[AI Orchestrator]: Dispatching to Gemini Edge API...</span><br/>';
-          try {
-            const res = await fetch('/api/v1/chat', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt: prompt })
-            });
-            const data = await res.json();
-            out.innerHTML += '<span style="color:#00ff66;">' + data.response + '</span><br/><br/>';
-          } catch(err) {
-            out.innerHTML += '<span style="color:#ff0055;">[AI Error]: ' + err.message + '</span><br/><br/>';
-          }
-        } else if (cmd === 'logs') {
-          const res = await fetch('/api/telemetry/recent-logs');
-          const data = await res.json();
-          out.innerHTML += '<pre style="color:#00ffcc;">' + JSON.stringify(data.logs, null, 2) + '</pre><br/>';
-        } else if (cmd === 'whoami') {
-          out.innerHTML += 'Client IP: ${clientIP}<br/>Location: ${city}, ${country}<br/>Session: ' + sessionId + '<br/><br/>';
-        } else if (cmd === 'status') {
-          out.innerHTML += 'Node: Cloudflare Edge<br/>D1 Status: CONNECTED<br/>AI Engine: READY<br/><br/>';
-        } else if (cmd === 'clear') {
-          out.innerHTML = '';
+            '&nbsp;&nbsp;<b>clear</b> : Clear terminal screen</div><br/>');
+        } else if (cmd.indexOf("ai ") === 0) {
+          var prompt = cmd.substring(3);
+          appendLog('<div><span class="ai-loading">[AI Orchestrator]: Dispatching to Gemini Edge API...</span></div>');
+
+          fetch("/api/v1/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: prompt })
+          })
+          .then(function(res){ return res.json(); })
+          .then(function(data){
+            if (data.response) {
+              appendLog('<div><span class="ai-success">' + data.response + '</span></div><br/>');
+            } else {
+              appendLog('<div><span class="ai-error">[AI Error]: ' + (data.error || 'Unknown error') + '</span></div><br/>');
+            }
+          })
+          .catch(function(err){
+            appendLog('<div><span class="ai-error">[AI Network Error]: ' + err.message + '</span></div><br/>');
+          });
+        } else if (cmd === "logs") {
+          fetch("/api/telemetry/recent-logs")
+          .then(function(res){ return res.json(); })
+          .then(function(data){
+            appendLog('<pre style="color:#00ffcc;">' + JSON.stringify(data.logs, null, 2) + '</pre><br/>');
+          });
+        } else if (cmd === "whoami") {
+          appendLog('<div>Client IP: ' + clientIP + '<br/>Location: ' + city + ', ' + country + '<br/>Session: ' + sessionId + '</div><br/>');
+        } else if (cmd === "status") {
+          appendLog('<div>Node: Cloudflare Edge<br/>D1 Status: CONNECTED<br/>AI Engine: READY</div><br/>');
+        } else if (cmd === "clear") {
+          document.getElementById("term-out").innerHTML = "";
         } else {
-          out.innerHTML += 'Command not found: ' + cmd + '. Type \'help\' for available options.<br/><br/>';
+          appendLog('<div>Command not found: ' + cmd + '. Type "help" for available options.</div><br/>');
         }
-        out.scrollTop = out.scrollHeight;
       }
     }
   </script>
