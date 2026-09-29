@@ -1,3 +1,5 @@
+import { GoogleGenAI } from "@google/genai";
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -16,7 +18,7 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // API 1: 健康检查 Endpoint
+    // API 1: 健康检查
     // -------------------------------------------------------------
     if (url.pathname === "/api/health-check") {
       return new Response(
@@ -32,9 +34,9 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // API 2: Gemini AI API 路由
+    // API 2: Gemini AI SDK 路由 (带自动退避重试与模型 Failover 降级)
     // -------------------------------------------------------------
-   if (url.pathname === "/api/v1/chat" && request.method === "POST") {
+    if (url.pathname === "/api/v1/chat" && request.method === "POST") {
       try {
         const { prompt } = await request.json();
         if (!prompt) {
@@ -55,49 +57,65 @@ export default {
           );
         }
 
-        // 使用 standard Endpoint 支持 Gemini API
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-        const aiReq = await fetch(geminiUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-          })
-        });
+        const ai = new GoogleGenAI({ apiKey: apiKey });
+        // 定义候选模型优先级链条
+        const candidateModels = ["gemini-3.8-flash", "gemini-1.5-flash-latest"];
+        let responseText = null;
+        let lastErrMessage = "";
 
-        const aiData = await aiReq.json();
-        
-        if (!aiReq.ok) {
-          const errMsg = aiData.error?.message || JSON.stringify(aiData);
+        // 依次尝试候选模型
+        for (const modelName of candidateModels) {
+          // 每个模型最多重试 2 次 (退避重试)
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              const response = await ai.models.generateContent({
+                model: modelName,
+                contents: prompt,
+              });
+              if (response && response.text) {
+                responseText = response.text;
+                break;
+              }
+            } catch (err) {
+              lastErrMessage = err.message || JSON.stringify(err);
+              console.warn(`[Retry] Model ${modelName} attempt ${attempt + 1} failed: ${lastErrMessage}`);
+              // 遇到 503，等待 1 秒后重试
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+          }
+          if (responseText) break;
+        }
+
+        if (responseText) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              prompt: prompt,
+              response: responseText,
+              timestamp: new Date().toISOString()
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        } else {
           return new Response(
             JSON.stringify({
               success: false,
-              error: `Gemini API Error (${aiReq.status}): ${errMsg}`
+              error: `[NEXUS-AI High Load]: Upstream models temporarily busy. (${lastErrMessage})`
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-
-        const responseText =
-          aiData.candidates?.[0]?.content?.parts?.[0]?.text ||
-          "[NEXUS-AI]: No content generated.";
-
+      } catch (err) {
         return new Response(
           JSON.stringify({
-            success: true,
-            prompt: prompt,
-            response: responseText,
-            timestamp: new Date().toISOString()
+            success: false,
+            error: `[NEXUS-AI SDK Error]: ${err.message}`
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
       }
     }
+
     // -------------------------------------------------------------
     // API 3: D1 遥测数据上报与心跳
     // -------------------------------------------------------------
@@ -173,7 +191,7 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // HTML / Dashboard UI Render (完全避免引号和反斜杠转义问题)
+    // Dashboard UI
     // -------------------------------------------------------------
     const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -211,7 +229,7 @@ export default {
       <div class="status-card">
         <span class="badge">ONLINE</span>
         <div class="status-title">Agentic AI Pipeline Service</div>
-        <div class="status-value">Gemini 1.5 Flash Edge API</div>
+        <div class="status-value">Gemini SDK Edge API</div>
       </div>
       <div class="status-card">
         <span class="badge">CONNECTED</span>
@@ -288,8 +306,8 @@ export default {
             '&nbsp;&nbsp;<b>status</b> : Show gateway health status<br/>' +
             '&nbsp;&nbsp;<b>whoami</b> : Display client connection context<br/>' +
             '&nbsp;&nbsp;<b>clear</b> : Clear terminal screen</div><br/>');
-        } else if (cmd.indexOf("ai ") === 0) {
-          var prompt = cmd.substring(3);
+        } else if (cmd.indexOf("ai") === 0) {
+          var prompt = cmd.replace(/^ai[:：\s]*/i, "").trim();
           appendLog('<div><span class="ai-loading">[AI Orchestrator]: Dispatching to Gemini Edge API...</span></div>');
 
           fetch("/api/v1/chat", {

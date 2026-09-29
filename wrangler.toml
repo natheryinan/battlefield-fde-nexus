@@ -6,3 +6,7 @@ compatibility_date = "2026-09-25"
 binding = "DB"
 database_name = "telemetry-db"
 database_id = "7259130c-6b2b-420b-b1db-bb7d0f3ba964"
+
+[[kv_namespaces]]
+binding = "NEXUS_CACHE"
+id = "04f3089ed0764ea5a86ad1b0d94fae67"
