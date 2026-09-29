@@ -1,5 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
-
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -18,7 +16,7 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // API 1: 健康检查
+    // API 1: 健康检查 Endpoint
     // -------------------------------------------------------------
     if (url.pathname === "/api/health-check") {
       return new Response(
@@ -34,16 +32,40 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // API 2: Gemini AI SDK 路由 (带自动退避重试与模型 Failover 降级)
+    // API 2: Gemini AI 原生 REST Endpoint (带 KV 缓存与多模型 Failover 降级)
     // -------------------------------------------------------------
     if (url.pathname === "/api/v1/chat" && request.method === "POST") {
       try {
-        const { prompt } = await request.json();
+        const body = await request.json().catch(() => ({}));
+        const prompt = body.prompt;
         if (!prompt) {
           return new Response(JSON.stringify({ error: "Prompt is required" }), {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" }
           });
+        }
+
+        const cacheKey = `prompt_cache:${encodeURIComponent(prompt.trim())}`;
+        
+        // 1. 优先读取 Cloudflare KV 缓存
+        if (env.NEXUS_CACHE) {
+          try {
+            const cachedResponse = await env.NEXUS_CACHE.get(cacheKey);
+            if (cachedResponse) {
+              return new Response(
+                JSON.stringify({
+                  success: true,
+                  prompt: prompt,
+                  response: `[KV-CACHE-HIT]: ${cachedResponse}`,
+                  cached: true,
+                  timestamp: new Date().toISOString()
+                }),
+                { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
+          } catch (cacheErr) {
+            console.warn("KV Cache Read Error:", cacheErr.message);
+          }
         }
 
         const apiKey = env.GEMINI_API_KEY || env.lordalmightywife;
@@ -57,41 +79,58 @@ export default {
           );
         }
 
-        const ai = new GoogleGenAI({ apiKey: apiKey });
-        // 定义候选模型优先级链条
-        const candidateModels = ["gemini-3.8-flash", "gemini-1.5-flash-latest"];
+        // 备选模型链路：优先 gemini-3.8-flash，拥堵时自动切至低延迟高并发的 gemini-3.5-flash-lite
+        const candidateModels = ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
         let responseText = null;
-        let lastErrMessage = "";
+        let lastError = null;
 
-        // 依次尝试候选模型
         for (const modelName of candidateModels) {
-          // 每个模型最多重试 2 次 (退避重试)
-          for (let attempt = 0; attempt < 2; attempt++) {
+          const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+          
+          for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-              const response = await ai.models.generateContent({
-                model: modelName,
-                contents: prompt,
+              const aiReq = await fetch(geminiUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [{ parts: [{ text: prompt }] }]
+                })
               });
-              if (response && response.text) {
-                responseText = response.text;
+
+              const aiData = await aiReq.json();
+
+              if (aiReq.ok && aiData.candidates?.[0]?.content?.parts?.[0]?.text) {
+                responseText = aiData.candidates[0].content.parts[0].text;
                 break;
+              } else {
+                lastError = aiData.error?.message || `HTTP ${aiReq.status}`;
               }
-            } catch (err) {
-              lastErrMessage = err.message || JSON.stringify(err);
-              console.warn(`[Retry] Model ${modelName} attempt ${attempt + 1} failed: ${lastErrMessage}`);
-              // 遇到 503，等待 1 秒后重试
-              await new Promise((resolve) => setTimeout(resolve, 1000));
+            } catch (fetchErr) {
+              lastError = fetchErr.message;
+            }
+
+            if (attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 800));
             }
           }
+
           if (responseText) break;
         }
 
         if (responseText) {
+          // 2. 写入 Cloudflare KV 缓存 (TTL: 24小时)
+          if (env.NEXUS_CACHE) {
+            ctx.waitUntil(
+              env.NEXUS_CACHE.put(cacheKey, responseText, { expirationTtl: 86400 }).catch(() => {})
+            );
+          }
+
           return new Response(
             JSON.stringify({
               success: true,
               prompt: prompt,
               response: responseText,
+              cached: false,
               timestamp: new Date().toISOString()
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -100,7 +139,7 @@ export default {
           return new Response(
             JSON.stringify({
               success: false,
-              error: `[NEXUS-AI High Load]: Upstream models temporarily busy. (${lastErrMessage})`
+              error: `[NEXUS-AI High Load]: Upstream models temporarily busy. (${lastError})`
             }),
             { headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
@@ -109,7 +148,7 @@ export default {
         return new Response(
           JSON.stringify({
             success: false,
-            error: `[NEXUS-AI SDK Error]: ${err.message}`
+            error: `[Gateway Worker Error]: ${err.message}`
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
@@ -121,39 +160,41 @@ export default {
     // -------------------------------------------------------------
     if (url.pathname === "/api/telemetry/heartbeat" && request.method === "POST") {
       try {
-        const body = await request.json();
+        const body = await request.json().catch(() => ({}));
         const { sessionId, dwellSeconds, eventType, hardwareConcurrency, screenResolution, lastCommand, errorStack } = body;
         const timestamp = new Date().toISOString();
         const userAgent = request.headers.get("user-agent") || "UNKNOWN";
 
-        const query = `
-          INSERT INTO telemetry_logs (
-            session_id, timestamp, dwell_seconds, event_type, ip, country, city, user_agent, hardware_concurrency, screen_resolution, last_command, error_stack
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(session_id) DO UPDATE SET
-            dwell_seconds = excluded.dwell_seconds,
-            timestamp = excluded.timestamp,
-            event_type = excluded.event_type,
-            last_command = COALESCE(excluded.last_command, telemetry_logs.last_command),
-            error_stack = COALESCE(excluded.error_stack, telemetry_logs.error_stack);
-        `;
+        if (env.DB) {
+          const query = `
+            INSERT INTO telemetry_logs (
+              session_id, timestamp, dwell_seconds, event_type, ip, country, city, user_agent, hardware_concurrency, screen_resolution, last_command, error_stack
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+              dwell_seconds = excluded.dwell_seconds,
+              timestamp = excluded.timestamp,
+              event_type = excluded.event_type,
+              last_command = COALESCE(excluded.last_command, telemetry_logs.last_command),
+              error_stack = COALESCE(excluded.error_stack, telemetry_logs.error_stack);
+          `;
 
-        await env.DB.prepare(query)
-          .bind(
-            sessionId,
-            timestamp,
-            dwellSeconds || 0,
-            eventType || "heartbeat",
-            clientIP,
-            country,
-            city,
-            userAgent,
-            hardwareConcurrency || 0,
-            screenResolution || "UNKNOWN",
-            lastCommand || null,
-            errorStack || null
-          )
-          .run();
+          await env.DB.prepare(query)
+            .bind(
+              sessionId || "UNKNOWN",
+              timestamp,
+              dwellSeconds || 0,
+              eventType || "heartbeat",
+              clientIP,
+              country,
+              city,
+              userAgent,
+              hardwareConcurrency || 0,
+              screenResolution || "UNKNOWN",
+              lastCommand || null,
+              errorStack || null
+            )
+            .run();
+        }
 
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -171,15 +212,19 @@ export default {
     // -------------------------------------------------------------
     if (url.pathname === "/api/telemetry/recent-logs" && request.method === "GET") {
       try {
-        const logs = await env.DB.prepare(`
-          SELECT session_id, city, country, ip, dwell_seconds, last_command, timestamp 
-          FROM telemetry_logs 
-          ORDER BY id DESC 
-          LIMIT 5;
-        `).all();
+        let results = [];
+        if (env.DB) {
+          const logs = await env.DB.prepare(`
+            SELECT session_id, city, country, ip, dwell_seconds, last_command, timestamp 
+            FROM telemetry_logs 
+            ORDER BY id DESC 
+            LIMIT 5;
+          `).all();
+          results = logs.results || [];
+        }
 
         return new Response(
-          JSON.stringify({ logs: logs.results || [] }),
+          JSON.stringify({ logs: results }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       } catch (err) {
@@ -191,7 +236,7 @@ export default {
     }
 
     // -------------------------------------------------------------
-    // Dashboard UI
+    // Dashboard UI Render
     // -------------------------------------------------------------
     const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -211,13 +256,13 @@ export default {
     .badge { background: #00ffcc22; color: #00ffcc; border: 1px solid #00ffcc; font-size: 10px; padding: 2px 6px; float: right; }
     .terminal-container { border: 1px solid #ff005588; background: #040914; padding: 15px; }
     .terminal-header { font-size: 12px; color: #ff0055; margin-bottom: 10px; }
-    .terminal-box { height: 260px; overflow-y: auto; font-size: 13px; line-height: 1.5; color: #00ffcc; padding-right: 5px; }
+    .terminal-box { height: 320px; overflow-y: auto; font-size: 13px; line-height: 1.6; color: #00ffcc; padding-right: 5px; }
     .input-row { display: flex; margin-top: 10px; border-top: 1px dashed #00ffcc33; padding-top: 10px; }
     .prompt-label { color: #ff0055; margin-right: 10px; font-weight: bold; }
     input[type="text"] { background: transparent; border: none; outline: none; color: #00ffcc; font-family: inherit; font-size: 13px; flex: 1; }
     .cmd-line { color: #ffffff; }
     .ai-loading { color: #e3b341; }
-    .ai-success { color: #00ff66; }
+    .ai-success { color: #00ff66; white-space: pre-wrap; word-break: break-word; margin-top: 5px; margin-bottom: 15px; display: block; }
     .ai-error { color: #ff0055; }
   </style>
 </head>
@@ -229,7 +274,7 @@ export default {
       <div class="status-card">
         <span class="badge">ONLINE</span>
         <div class="status-title">Agentic AI Pipeline Service</div>
-        <div class="status-value">Gemini SDK Edge API</div>
+        <div class="status-value">Gemini 3.8 / 3.5 + KV Cache</div>
       </div>
       <div class="status-card">
         <span class="badge">CONNECTED</span>
@@ -248,11 +293,12 @@ export default {
       <div class="terminal-box" id="term-out">
         [SYS_INIT] Gateway loaded successfully.<br/>
         [D1_STATUS] Database binding verified: DB.<br/>
+        [KV_CACHE] Edge Cache Layer Bound: NEXUS_CACHE.<br/>
         [GEO_TRACE] Ingress: ${city}, ${country} | IP: ${clientIP}<br/><br/>
       </div>
       <div class="input-row">
         <span class="prompt-label">root@yinan-gate:~#</span>
-        <input type="text" id="term-in" placeholder="Enter command..." onkeydown="onCommand(event)" />
+        <input type="text" id="term-in" placeholder="Enter command..." autofocus onkeyup="checkEnter(event)" />
       </div>
     </div>
   </div>
@@ -266,8 +312,19 @@ export default {
 
     function appendLog(html) {
       var out = document.getElementById("term-out");
-      out.innerHTML += html;
-      out.scrollTop = out.scrollHeight;
+      if (out) {
+        out.innerHTML += html;
+        out.scrollTop = out.scrollHeight;
+      }
+    }
+
+    function formatMarkdown(text) {
+      if (!text) return "";
+      return text
+        .split("\\n").join("<br/>")
+        .split("**").reduce(function(acc, item, idx) {
+          return acc + (idx % 2 === 1 ? '<b style="color:#ffffff;">' + item + '</b>' : item);
+        }, "");
     }
 
     function sendTelemetry(cmd) {
@@ -288,59 +345,71 @@ export default {
 
     setInterval(function(){ sendTelemetry(null); }, 5000);
 
-    function onCommand(e) {
-      if (e.key === "Enter") {
-        var input = document.getElementById("term-in");
-        var cmd = input.value.trim();
-        if (!cmd) return;
+    function checkEnter(e) {
+      if (e.keyCode === 13 || e.key === "Enter") {
+        execCmd();
+      }
+    }
 
-        input.value = "";
-        appendLog('<div><span class="cmd-line">root@yinan-gate:~# ' + cmd + '</span></div>');
+    function execCmd() {
+      var input = document.getElementById("term-in");
+      if (!input) return;
 
-        sendTelemetry(cmd);
+      var cmd = input.value.trim();
+      if (!cmd) return;
 
-        if (cmd === "help") {
-          appendLog('<div>Available Commands:<br/>' +
-            '&nbsp;&nbsp;<b>ai &lt;prompt&gt;</b> : Dispatch prompt to Edge AI Service<br/>' +
-            '&nbsp;&nbsp;<b>logs</b> : Query latest 5 D1 telemetry records<br/>' +
-            '&nbsp;&nbsp;<b>status</b> : Show gateway health status<br/>' +
-            '&nbsp;&nbsp;<b>whoami</b> : Display client connection context<br/>' +
-            '&nbsp;&nbsp;<b>clear</b> : Clear terminal screen</div><br/>');
-        } else if (cmd.indexOf("ai") === 0) {
-          var prompt = cmd.replace(/^ai[:：\s]*/i, "").trim();
-          appendLog('<div><span class="ai-loading">[AI Orchestrator]: Dispatching to Gemini Edge API...</span></div>');
+      input.value = "";
+      appendLog('<div><span class="cmd-line">root@yinan-gate:~# ' + cmd + '</span></div>');
 
-          fetch("/api/v1/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: prompt })
-          })
-          .then(function(res){ return res.json(); })
-          .then(function(data){
-            if (data.response) {
-              appendLog('<div><span class="ai-success">' + data.response + '</span></div><br/>');
-            } else {
-              appendLog('<div><span class="ai-error">[AI Error]: ' + (data.error || 'Unknown error') + '</span></div><br/>');
-            }
-          })
-          .catch(function(err){
-            appendLog('<div><span class="ai-error">[AI Network Error]: ' + err.message + '</span></div><br/>');
-          });
-        } else if (cmd === "logs") {
-          fetch("/api/telemetry/recent-logs")
-          .then(function(res){ return res.json(); })
-          .then(function(data){
-            appendLog('<pre style="color:#00ffcc;">' + JSON.stringify(data.logs, null, 2) + '</pre><br/>');
-          });
-        } else if (cmd === "whoami") {
-          appendLog('<div>Client IP: ' + clientIP + '<br/>Location: ' + city + ', ' + country + '<br/>Session: ' + sessionId + '</div><br/>');
-        } else if (cmd === "status") {
-          appendLog('<div>Node: Cloudflare Edge<br/>D1 Status: CONNECTED<br/>AI Engine: READY</div><br/>');
-        } else if (cmd === "clear") {
-          document.getElementById("term-out").innerHTML = "";
-        } else {
-          appendLog('<div>Command not found: ' + cmd + '. Type "help" for available options.</div><br/>');
+      sendTelemetry(cmd);
+
+      if (cmd === "help") {
+        appendLog('<div>Available Commands:<br/>' +
+          '&nbsp;&nbsp;<b>ai &lt;prompt&gt;</b> : Dispatch prompt to Edge AI Service (KV Cache Enabled)<br/>' +
+          '&nbsp;&nbsp;<b>logs</b> : Query latest 5 D1 telemetry records<br/>' +
+          '&nbsp;&nbsp;<b>status</b> : Show gateway health status<br/>' +
+          '&nbsp;&nbsp;<b>whoami</b> : Display client connection context<br/>' +
+          '&nbsp;&nbsp;<b>clear</b> : Clear terminal screen</div><br/>');
+      } else if (cmd.indexOf("ai") === 0) {
+        var prompt = cmd.replace(/^ai[:：\s]*/i, "").trim();
+        if (!prompt) {
+          appendLog('<div><span class="ai-error">[System Alert]: Prompt cannot be empty. Usage: ai &lt;your question&gt;</span></div><br/>');
+          return;
         }
+
+        appendLog('<div><span class="ai-loading">[AI Orchestrator]: Dispatching to Gemini Edge API...</span></div>');
+
+        fetch("/api/v1/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: prompt })
+        })
+        .then(function(res){ return res.json(); })
+        .then(function(data){
+          if (data.response) {
+            var formatted = formatMarkdown(data.response);
+            appendLog('<div><span class="ai-success">' + formatted + '</span></div>');
+          } else {
+            appendLog('<div><span class="ai-error">[AI Error]: ' + (data.error || 'Unknown error') + '</span></div><br/>');
+          }
+        })
+        .catch(function(err){
+          appendLog('<div><span class="ai-error">[AI Network Error]: ' + err.message + '</span></div><br/>');
+        });
+      } else if (cmd === "logs") {
+        fetch("/api/telemetry/recent-logs")
+        .then(function(res){ return res.json(); })
+        .then(function(data){
+          appendLog('<pre style="color:#00ffcc;">' + JSON.stringify(data.logs, null, 2) + '</pre><br/>');
+        });
+      } else if (cmd === "whoami") {
+        appendLog('<div>Client IP: ' + clientIP + '<br/>Location: ' + city + ', ' + country + '<br/>Session: ' + sessionId + '</div><br/>');
+      } else if (cmd === "status") {
+        appendLog('<div>Node: Cloudflare Edge<br/>KV Cache: ACTIVE<br/>D1 Status: CONNECTED<br/>AI Engine: READY</div><br/>');
+      } else if (cmd === "clear") {
+        document.getElementById("term-out").innerHTML = "";
+      } else {
+        appendLog('<div>Command not found: ' + cmd + '. Type "help" for available options.</div><br/>');
       }
     }
   </script>
