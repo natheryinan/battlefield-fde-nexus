@@ -19,6 +19,6 @@
   },
   "homepage": "https://github.com/natheryinan/battlefield-fde-nexus#readme",
   "devDependencies": {
-    "wrangler": "^4.141.0"
+    "wrangler": "^4.151.1"
   }
 }
