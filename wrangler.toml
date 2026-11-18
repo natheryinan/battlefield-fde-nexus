@@ -1,12 +1,28 @@
-name = "bidding-ponds"
+name = "battlefield-fde-nexus"
 main = "src/index.js"
-compatibility_date = "2026-09-25"
+compatibility_date = "2026-09-23"
+compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "telemetry-db"
-database_id = "7259130c-6b2b-420b-b1db-bb7d0f3ba964"
+database_id = "REDACTED_D1_UUID"
 
 [[kv_namespaces]]
 binding = "NEXUS_CACHE"
-id = "04f3089ed0764ea5a86ad1b0d94fae67"
+id = "REDACTED_KV_ID"
+
+[observability]
+enabled = true
+head_sampling_rate = 1 # 100% 日志采样率（记录所有日志）
+
+
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html", "**/*.txt"]
+fallthrough = true
+
+
+[placement]
+mode = "smart"

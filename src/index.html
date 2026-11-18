@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BATTLEFIELD FDE NEXUS GATEWAY</title>
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tokyo-night-dark.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+  <style>
+    #terminal-output,
+    .message {
+      white-space: pre-wrap !important;
+      word-wrap: break-word;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #030712;
+      color: #00ffcc;
+      font-family: "Courier New", Consolas, monospace;
+      padding: 24px;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      border: 1px solid #00ffcc33;
+      padding: 20px;
+      background: rgba(3, 7, 18, 0.95);
+      box-shadow: 0 0 20px rgba(0, 255, 204, 0.1);
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 22px;
+      letter-spacing: 2px;
+      color: #00ffcc;
+      border-bottom: 1px solid #00ffcc33;
+      padding-bottom: 15px;
+      margin-bottom: 20px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .status-card {
+      border: 1px solid #00ffcc44;
+      padding: 15px;
+      background: #081225;
+    }
+
+    .status-title {
+      font-size: 12px;
+      color: #88a0b0;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+
+    .status-value {
+      font-size: 14px;
+      font-weight: bold;
+      color: #00ffcc;
+    }
+
+    .badge {
+      background: #00ffcc22;
+      color: #00ffcc;
+      border: 1px solid #00ffcc;
+      font-size: 10px;
+      padding: 2px 6px;
+      float: right;
+    }
+
+    .terminal-container {
+      border: 1px solid #ff005588;
+      background: #040914;
+      padding: 15px;
+      cursor: text;
+    }
+
+    .terminal-header {
+      font-size: 12px;
+      color: #ff0055;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .terminal-box {
+      height: 380px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #00ffcc;
+      padding-right: 5px;
+    }
+
+    .input-row {
+      display: flex;
+      margin-top: 10px;
+      border-top: 1px dashed #00ffcc33;
+      padding-top: 10px;
+    }
+
+    .prompt-label {
+      color: #ff0055;
+      margin-right: 10px;
+      font-weight: bold;
+    }
+
+    input[type="text"] {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #00ffcc;
+      font-family: inherit;
+      font-size: 13px;
+      flex: 1;
+    }
+
+    .cmd-line {
+      color: #ffffff;
+    }
+
+    .ai-loading {
+      color: #e3b341;
+      margin-top: 6px;
+      margin-bottom: 4px;
+      display: block;
+    }
+
+    .ai-success {
+      color: #d1d5db;
+      margin-top: 4px;
+      margin-bottom: 15px;
+      display: block;
+      overflow-x: auto;
+    }
+
+    .ai-error {
+      color: #ff0055;
+      margin-top: 4px;
+      display: block;
+    }
+
+    .ai-aborted {
+      color: #ffaa00;
+      font-style: italic;
+      margin-top: 4px;
+      display: block;
+    }
+
+    pre {
+      background: #0d1117 !important;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      margin: 10px 0;
+      position: relative;
+      overflow-x: auto;
+    }
+
+    code {
+      font-family: "Consolas", "Courier New", monospace !important;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      background: #21262d;
+      color: #00ffcc;
+      border: 1px solid #30363d;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover {
+      background: #30363d;
+    }
+
+    .ai-success h1,
+    .ai-success h2,
+    .ai-success h3 {
+      color: #00ffcc;
+      margin: 14px 0 8px 0;
+      font-size: 14px;
+      font-weight: bold;
+      border-bottom: 1px dashed #00ffcc44;
+      padding-bottom: 4px;
+    }
+
+    .ai-success p {
+      margin: 8px 0;
+      line-height: 1.6;
+    }
+
+    .ai-success ul,
+    .ai-success ol {
+      margin: 8px 0 8px 24px;
+      padding-left: 6px;
+    }
+
+    .ai-success li {
+      margin: 4px 0;
+      color: #d1d5db;
+      line-height: 1.5;
+    }
+
+    .ai-success strong {
+      color: #ffffff;
+    }
+
+    .ai-success code:not(pre code) {
+      background: #111b27;
+      color: #ff0055;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-family: inherit;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>// BATTLEFIELD FDE NEXUS GATEWAY</h1>
+    <div class="status-grid">
+      <div class="status-card">
+        <span class="badge">ONLINE</span>
+        <div class="status-title">Agentic AI Pipeline Service</div>
+        <div class="status-value">Gemini SSE Stream + Highlight + KaTeX</div>
+      </div>
+      <div class="status-card">
+        <span class="badge">ACTIVE</span>
+        <div class="status-title">Active AI Model</div>
+        <div class="status-value">gemini-flash-latest</div>
+      </div>
+      <div class="status-card">
+        <span class="badge">CONNECTED</span>
+        <div class="status-title">D1 Log Persistence Engine</div>
+        <div class="status-value">telemetry-db (SQLite)</div>
+      </div>
+      <div class="status-card">
+        <span class="badge">ACTIVE</span>
+        <div class="status-title">Ingress Node Location</div>
+        <div class="status-value" id="node-loc-val">__LOCATION__</div>
+      </div>
+      <div class="status-card">
+        <span class="badge">LIVE</span>
+        <div class="status-title">Total Sessions</div>
+        <div id="total-sessions-card" class="status-value">0</div>
+      </div>
+
+      <div class="status-card">
+        <span class="badge">BLOCKED</span>
+        <div class="status-title">Total Blocked</div>
+        <div id="total-blocked-card" class="status-value">0</div>
+      </div>
+    </div>
+    <!-- 威胁日志列表挂载点 -->
+    <div id="threat-logs-container" style="margin: 15px 0;"></div>
+    <div class="terminal-container" onclick="focusInput()">
+      <div class="terminal-header">
+        <span>[INTERACTIVE TERMINAL - TYPE 'help', 'ai &lt;prompt&gt;', 'stop', 'reset', 'logs' OR 'whoami']</span>
+        <span id="session-counter" style="color: #00ffcc;">[CONTEXT: 0 msgs]</span>
+      </div>
+      <div class="terminal-box">
+        <div id="terminal-output">
+          [SYS_INIT] Gateway loaded successfully.<br />
+          [D1_STATUS] Database binding verified: DB.<br />
+          [STREAM_ENGINE] Markdown + Highlight.js + KaTeX Active.<br />
+          [MULTI_TURN] Context memory initialized.<br />
+          [INTERRUPT] Press Ctrl+C or type &apos;stop&apos; to cancel AI generation.<br />
+          <span id="geo-log">__GEOLOG__</span><br /><br />
+        </div>
+      </div>
+      <div class="input-row">
+        <span class="prompt-label">root@yinan-gate:~#</span>
+        <input type="text" id="term-in" placeholder="Enter command..." onkeydown="handleKeyDown(event)" autofocus
+          autocomplete="off" />
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+
+</html>
